@@ -7,6 +7,33 @@ DKMS_MOD_VER:=$(shell grep 'PACKAGE_VERSION' dkms.conf | cut -d'=' -f2)
 
 obj-m += ipt_GLBREDIRECT.o
 
+# Probe the kernel headers for the __cookie_v[46]_check() arity. Upstream
+# removed the trailing 'cookie' argument in Linux 6.8, but distributions
+# backport the change, so a LINUX_VERSION_CODE check in the C code is not
+# reliable on its own. When we can read net/tcp.h we pass a definitive answer
+# through to the C code; otherwise it falls back to a version heuristic. The
+# 3-arg declaration carries a trailing 'u32 cookie' parameter (the only u32 in
+# the prototype), so its presence distinguishes the two forms.
+COOKIE_TCP_H := $(firstword $(wildcard $(srctree)/include/net/tcp.h $(srctree)/source/include/net/tcp.h))
+ifneq ($(COOKIE_TCP_H),)
+# Capture the __cookie_v4_check() declaration (it may span two lines). We only
+# emit a define when the declaration is actually found; if a future header
+# layout change hides it, COOKIE_DECL stays empty, no define is emitted, and the
+# C code falls back to its LINUX_VERSION_CODE heuristic. The 3-arg form carries
+# a trailing 'u32 cookie' parameter (the only u32 in the prototype), which
+# distinguishes the two forms. NB: keep the awk free of parentheses and commas
+# -- embedding either inside $(shell ...) breaks make's function/conditional
+# parser.
+COOKIE_DECL := $(shell awk '/__cookie_v4_check/{f=1} f{b=b $$0} f&&/;/{print b; exit}' $(COOKIE_TCP_H))
+ifneq ($(COOKIE_DECL),)
+ifeq ($(findstring u32,$(COOKIE_DECL)),)
+ccflags-y += -DGLB_COOKIE_CHECK_NO_COOKIE_ARG
+else
+ccflags-y += -DGLB_COOKIE_CHECK_HAS_COOKIE_ARG
+endif
+endif
+endif
+
 all: lib kmod
 
 kmod:
